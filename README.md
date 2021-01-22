@@ -1,5 +1,5 @@
 # Computing-sources-for-data-application
-This folder contains the computing sources for the real data application section for the book chapter "Bayesian inferences for panel count data and interval-censored data with nonparametric modeling of the baseline functions". 
+This folder contains the computing sources for the real data application section for the book chapter "Bayesian inferences for panel count data and interval-censored data with nonparametric modeling of the baseline functions". The book is named *"Bayesian Inference and Computation in Reliability and Survival Analysis"*, with editors *Professors Yuhlong Lio, Ding-Geng (Din) Chen, Hon Keung Tony Ng and Tzong-Ru Tsai*.
 
 There are three files in this folder. In each of them, we provide the R code that is used to analyze the dataset by applying the proposed method in the book chapter. 
 
