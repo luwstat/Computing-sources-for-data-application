@@ -1,0 +1,214 @@
+library(dplyr)
+library(splines)
+library(HI)
+library(PCDSpline)
+data(BladTumor)
+n<-max(BladTumor$subject)
+#record the number of observations for all patients
+k <- as.numeric(table(BladTumor$subject))
+K <- max(k)
+t <- matrix(,n,K)
+Z <- matrix(,n,K)
+x1<-c();x2<-c();x3<-c();x4<-c();
+for (r in 1:n){
+  rownum<-which(BladTumor$subject==r)
+  #record all observation times
+  t[r,][1:k[r]]<-BladTumor[rownum,]$time
+  #record all panel counts from non-overlapping intervals
+  Z[r,][1:k[r]]<-BladTumor[rownum,]$count1
+  x1[r]<-BladTumor[which(BladTumor$subject==r),]$number[1]
+  x2[r]<-BladTumor[which(BladTumor$subject==r),]$size[1]
+  x3[r]<-BladTumor[which(BladTumor$subject==r),]$pyridoxine[1];
+  x4[r]<-BladTumor[which(BladTumor$subject==r),]$thiotepa[1]
+}
+X<-cbind(x1,x2,x3,x4)
+
+Time <- cbind(rep(0,116),t)
+
+#the number of parameters(beta)
+pars = ncol(X)
+
+#function for generating beta
+betaf=function(x, j, bt, Zi, bsl,sig0) 
+{
+  bt[j]=x
+  tt = sum(X[,j]*x*Zi)-sum(phi*exp(X%*%bt)*bsl)-x^2/(2*sig0^2) # prior(beta)=N(0,sig0^2) 
+  return(tt)     
+}
+indfb=function(x,j,bt, Zi, bsl,sig0) (x > -3)*(x < 3)
+
+#function for generating v
+a_eta = 0.01
+b_eta = 0.01
+v_fun = function(x)
+{
+  lfc = (x-1)*sum(log(phi)) - x*(sum(phi)+b_eta) + (n*x+a_eta-1)*log(x) -n*log(gamma(x))
+  return(lfc)
+}
+v_ind_fun = function(x) (x>0)*(x < 1)
+
+#function for generating a
+indaf <- function(x,eta,dfs,sM,lmd) (x>0)*(x< 1)
+af <- function(x,eta,dfs,sM,lmd){
+  x*eta*sM*log(eta) - sum(log( gamma(x*eta*dfs))) + sum( (x*eta*dfs - 1)*log(lmd) ) - (a_eta - 1)*log(x) - b_eta*x
+}
+#function for generating eta
+indetaf <- function(x,a,dfs,sM,lmd) (x>0)*(x<5)
+etaf <- function(x,a,dfs,sM,lmd){
+  x*a*sM*log(x) - sum(log( gamma( a*dfs*x ) ) ) + sum( (a*x*dfs - 1)*log(lmd) ) - x*sum(lmd) - (a_eta - 1)*log(x) - b_eta*x
+}
+
+######################################################
+#specify some parameter value
+#######################################################
+#start the clock
+ptm <- proc.time()
+#############################################
+#set initial values and store vectors
+##############################################
+
+#calculate z total count for each individual
+Zi <- rowSums(Z,na.rm = T)
+
+#get trunbull interval bounds
+s <- na.omit(unique(as.vector(Time)))
+s <- s[order(s)]
+M <- length(s)-1
+
+#find k_ij's
+k <- data.frame(NULL)
+
+for (indiv in 1:n) {
+  krow <- as.data.frame (t ( findInterval(na.omit(Time[indiv,]),s ,left.open = T) ))
+  
+  k <- bind_rows(k, krow)
+}
+
+k <- as.matrix(k)
+
+k_ini <- t(apply(k,1,diff))
+
+
+#initial v,a,eta,phi
+v <- 0.5
+a <- 0.5
+eta <- 1
+phi <- rexp(n,1)
+
+#initial beta
+bt <- matrix(rep(0,ncol(X)),ncol(X),1)
+#initial u
+u <- vector("list",n)
+for (indiv in 1:n) {
+  u_i <- data.frame(NULL)
+  for ( tp in 1:length(na.omit(k_ini[indiv,])) ) {
+    
+    u_ini <-  as.data.frame( t ( rmultinom(1, 1, prob = rep(1/k_ini[indiv,tp] ,k_ini[indiv,tp] )) ) )
+    
+    colnames(u_ini) <- paste("V",seq(1,length(u_ini)),sep = "")
+    
+    u_i <- bind_rows(u_i,u_ini)
+  }
+  u[[indiv]] <- as.matrix(u_i)
+}
+
+#largest observation time point
+countlmd <- matrix(0,nrow = n,ncol = M)
+lt <- apply(k,1,max,na.rm = T)
+
+##########################
+#start sampling
+###################################
+ite <- 0
+tracking <- matrix(rep(NA,50000*(length(bt)+ M + 3)),50000,(length(bt)+ M +3))
+
+lmd <- rep(NA,M)
+while (ite < 50000) {
+  #sample lambda (jumps)
+  for (m in 1:M) {
+    
+    uijl <- NULL
+    zij <- NULL
+    
+    for (indiv in 1:n) {
+      
+      if(m <= max (k[indiv,],na.rm = T ) ){
+        
+        kij <-  findInterval(m,na.omit(k[indiv,]),left.open = T)
+        
+        zij <- c(zij,Z[indiv,kij])
+        
+        uijl <- c( uijl , u[[indiv]][kij , (m - k[indiv,kij] )] )
+        
+      }
+    }
+    
+    a_lmd <- sum(uijl*zij)  + a*(s[m+1] - s[m])*eta
+    b_lmd <- sum(exp(X%*%bt)*phi*(m <= lt)) + eta
+    
+    lmd[m] <- rgamma(1,a_lmd,b_lmd)
+  }
+  lmd[lmd == 0] <- 1e-200
+  
+  #sample u
+  for (indiv in 1:n) {
+    
+    for ( tp in 1:length(na.omit(k_ini[indiv,])) ) {
+      num <- lmd[ (k[indiv,tp]+1): k[indiv,tp+1]]
+      denom <- sum( num )
+      
+      u[[indiv]][tp,1:length(num)] <- rmultinom(1, 1, prob = num/denom )
+      
+    }
+  }
+  
+  #sample beta
+  bsl <- NULL
+  for (indiv in 1:n) {
+    bsl <- c(bsl,sum(lmd[1:lt[indiv]]))
+  }
+  for (j in 1:ncol(X)){
+    bt[j]=arms(bt[j],betaf, indfb, 1, j = j, bt=bt,  Zi = Zi, bsl = bsl,sig0 = 10)
+  }
+  
+  #sample  phi
+  phi_a <- Zi + v
+  phi_b <- as.vector(exp(X%*%bt))*bsl + v
+  phi <- rgamma(n,phi_a,phi_b)
+  
+  #sample v
+  v = arms(v, v_fun, v_ind_fun,1)
+  
+  #sample a
+  a <- arms(a,af,n.sample = 1,indaf,eta,dfs = diff(s),sM = s[M+1],lmd)
+  
+  #sample eta
+  eta <- arms(eta,etaf,n.sample = 1,indetaf,a,dfs = diff(s),sM = s[M+1],lmd)
+  
+  ite <- ite + 1 
+  
+  tracking[ite,] <- c(bt,v,a,eta,lmd)
+  
+} 
+#sample drop first 1000 observations with lag=10
+sample <- tracking[(10000 + 1):50000,]
+#posterior mean
+m <- apply(sample,2,mean)
+#credible interval
+ci <- apply(sample[,1:4],2,quantile,probs = c(0.025,0.975))
+#standard deviation
+std <- apply(sample[,1:4],2,sd)
+
+#standard deviation of v
+sd(sample[,5])
+quantile(sample[,5],c(0.025,0.975))
+
+comb <- as.data.frame(t(c(m[1:4],ci[,1],ci[,2],ci[,3],ci[,4],std[1],std[2],std[3],std[3],m[(length(bt)+1):length(m)])))
+
+#stop the time
+print(proc.time() - ptm)
+
+plot(s[-1],cumsum(m[(length(bt)+4):length(m)]),ylim = c(0,6.5), type = "s",lty = 1,xlab = "Observation Time (Month)",ylab = "Estimated Mean Function",main = 'Bladder Tumor Study')
+points(s[-1],(cumsum(m[(length(bt)+4):length(m)])*exp(m[3])),lty = 2, type = "s",col="blue")
+points(s[-1],(cumsum(m[(length(bt)+4):length(m)])*exp(m[4]) ),lty = 3, type = "s",col="red")
+legend(5,6.5,legend = c('Placebo','Pyridoxine','Thioepa'), col = c('black','blue','red'),lty = c(1,2,3))
